@@ -2376,8 +2376,15 @@ unsafe impl<P> PrimaryCommandBuffer for PrimaryAutoCommandBuffer<P> {
         exclusive: bool,
         queue: &Queue,
     ) -> Result<Option<(PipelineStages, AccessFlags)>, AccessCheckError> {
-        self.inner
-            .check_image_access(image, layout, exclusive, queue)
+        log::trace!("check_image_access from auto.rs -> self.inner (self = {:p})", self);
+        let ret = self.inner
+            .check_image_access(image, layout, exclusive, queue);
+        log::trace!("(done, auto.rs -> self.inner)");
+        if matches!(ret, Err(AccessCheckError::Denied(_))) {
+            println!("{:?}", backtrace::Backtrace::new());
+            println!(" ((/done))");
+        }
+        ret
     }
 }
 

@@ -496,7 +496,13 @@ unsafe impl<A> ImageAccess for ImmutableImage<A> {
         uninitialized_safe: bool,
         expected_layout: ImageLayout,
     ) -> Result<(), AccessError> {
+        log::trace!("ImmutableImage::try_gpu_lock(exclusive_access = {:?}, uninitialized_safe = {:?}, expected_layout = {:?}", exclusive_access, uninitialized_safe, expected_layout);
+        log::trace!("  (self.layout = {:?})", self.layout);
         if expected_layout != self.layout && expected_layout != ImageLayout::Undefined {
+            println!("Triggered in ImmutableImage.");
+            println!("  (exclusive_access = {:?}, uninitialized_safe = {:?}, expected_layout = {:?})", exclusive_access, uninitialized_safe, expected_layout);
+            println!("  -> self.layout = {:?}", self.layout);
+            println!("{:?}", backtrace::Backtrace::new());
             return Err(AccessError::UnexpectedImageLayout {
                 requested: expected_layout,
                 allowed: self.layout,
@@ -510,6 +516,9 @@ unsafe impl<A> ImageAccess for ImmutableImage<A> {
         if !self.initialized.load(Ordering::Relaxed) {
             return Err(AccessError::BufferNotInitialized);
         }
+        println!("Ok(()) in ImmutableImage.");
+        println!("  (exclusive_access = {:?}, uninitialized_safe = {:?}, expected_layout = {:?})", exclusive_access, uninitialized_safe, expected_layout);
+        println!("  -> self.layout = {:?}", self.layout);
 
         Ok(())
     }
@@ -593,7 +602,10 @@ unsafe impl ImageAccess for SubImage {
         uninitialized_safe: bool,
         expected_layout: ImageLayout,
     ) -> Result<(), AccessError> {
+        log::trace!("SubImage::try_gpu_lock(exclusive_access = {:?}, uninitialized_safe = {:?}, expected_layout = {:?}", exclusive_access, uninitialized_safe, expected_layout);
+        log::trace!("  (self.layout = {:?})", self.layout);
         if expected_layout != self.layout && expected_layout != ImageLayout::Undefined {
+            println!("Trigger, in SubImage");
             return Err(AccessError::UnexpectedImageLayout {
                 requested: expected_layout,
                 allowed: self.layout,
@@ -674,6 +686,7 @@ unsafe impl<A> ImageAccess for ImmutableImageInitialization<A> {
         expected_layout: ImageLayout,
     ) -> Result<(), AccessError> {
         if expected_layout != ImageLayout::Undefined {
+            println!("Trigger, in ImmutableImageInitialization");
             return Err(AccessError::UnexpectedImageLayout {
                 requested: expected_layout,
                 allowed: ImageLayout::Undefined,

@@ -520,6 +520,8 @@ impl SyncCommandBufferBuilder {
             "The builder has been put in an inconsistent state by a previous error"
         );
 
+        let command_name = command.name();
+
         // Note that we don't submit the command to the inner command buffer yet.
         let (latest_command_id, end) = {
             let mut commands_lock = self.commands.lock().unwrap();
@@ -643,6 +645,7 @@ impl SyncCommandBufferBuilder {
                                 }
                             }
 
+                            log::trace!("command ID collision push mut happing, push {}", latest_command_id);
                             entry.key().command_ids.borrow_mut().push(latest_command_id);
                             let entry = entry.into_mut();
 
@@ -673,6 +676,7 @@ impl SyncCommandBufferBuilder {
                                             .image(resource_index);
 
                                         let b = &mut self.pending_barrier;
+                                        log::trace!("add_image_mem_barrier({:p}); entry.current_layout = {:?}, start_layout = {:?}", img, entry.current_layout, start_layout);
                                         b.add_image_memory_barrier(
                                             img,
                                             img.current_miplevels_access(),
@@ -778,6 +782,13 @@ impl SyncCommandBufferBuilder {
                             }
                         }
 
+                        log::trace!(
+                            "About to insert entry, command = {:?}, resource_index = {:?}, initial_layout: {:?}, current_layout: {:?}?",
+                            command_name,
+                            resource_index,
+                            actual_start_layout,
+                            end_layout,
+                        );
                         entry.insert(ResourceState {
                             memory: PipelineMemoryAccess {
                                 stages: memory.stages,
@@ -926,6 +937,22 @@ impl SyncCommandBufferBuilder {
             }
         }
 
+        fn print_commands(cmds: &Commands) -> String {
+            let mut s = String::new();
+            s.push_str("[");
+            for cmd in cmds.commands.iter() {
+                s.push_str(cmd.name());
+                s.push_str(", ");
+            }
+            s.push_str("]");
+            s
+        }
+        log::trace!("Building CB; self.resources prior to final map:");
+        log::trace!("self.commands = {}", print_commands(&commands_lock));
+        for (key, entry) in self.resources.iter() {
+            log::trace!("--> {:?}; {:?}; {:?}\n{:#?}", key.command_ids, key.resource_ty, key.resource_index, entry);
+        }
+
         // Turns the commands into a list of "final commands" that are slimmer.
         let final_commands = {
             let mut final_commands = Vec::with_capacity(commands_lock.commands.len());
@@ -947,6 +974,29 @@ impl SyncCommandBufferBuilder {
                 })
                 .collect()
         };
+        log::trace!("Finalized resources map:");
+        fn print_final_commands(cmds: &Vec<Box<dyn FinalCommand + Send + Sync>>) -> String {
+            let mut s = String::new();
+            s.push_str("[");
+            for cmd in cmds.iter() {
+                s.push_str(cmd.name());
+                s.push_str(", ");
+            }
+            s.push_str("]");
+            s
+        }
+        for (key, entry) in final_resources_states.iter() {
+            let key = match key {
+                CbKey::Command { commands, command_ids, resource_ty, resource_index } => {
+                    let s = print_final_commands(&commands);
+                    format!("{}; {:?}; {:?}; {:?}", s, command_ids, resource_ty, resource_index)
+                }
+                _ => "other".to_string(),
+            };
+            log::trace!("--> {}\n{:#?}", key, entry);
+        }
+
+        //log::trace!("Building CB; resources after final map: {:#?}", final_resources_states);
 
         Ok(SyncCommandBuffer {
             inner: self.inner.build()?,
@@ -1057,8 +1107,14 @@ impl SyncCommandBuffer {
                 }
 
                 KeyTy::Image => {
+                    log::trace!("lock_submit: image; resource_index = {:?}, cmd = {:?}", resource_index, command.name());
                     let img = command.image(resource_index);
 
+                    log::trace!(
+                        "lock_submit: check_image_access (img = 0x{:x}), requrest layout = {:?}",
+                        ash::vk::Handle::as_raw(crate::VulkanObject::internal_object(img.inner().image)),
+                        entry.initial_layout,
+                    );
                     let prev_err = match future.check_image_access(
                         img,
                         entry.initial_layout,
@@ -1066,15 +1122,20 @@ impl SyncCommandBuffer {
                         queue,
                     ) {
                         Ok(_) => {
+                            log::trace!("lock_submit: check_image_access() -> Ok");
                             unsafe {
                                 img.increase_gpu_lock();
                             }
                             locked_resources += 1;
                             continue;
                         }
-                        Err(err) => err,
+                        Err(err) => {
+                            log::trace!("lock_submit: check_image_access() -> Err {:?}", err);
+                            err
+                        }
                     };
 
+                    log::trace!("Calling try_gpu_lock() on img = {:p} (prev_err = {:?})", img, prev_err);
                     match (
                         img.try_gpu_lock(
                             entry.exclusive,
@@ -1222,8 +1283,19 @@ impl SyncCommandBuffer {
     ) -> Result<Option<(PipelineStages, AccessFlags)>, AccessCheckError> {
         // TODO: check the queue family
 
+        log::trace!(
+            "check_image_access called (image = 0x{:x}, layout = {:?}, exclusive = {:?})",
+            ash::vk::Handle::as_raw(
+                crate::VulkanObject::internal_object(image.inner().image)
+            ),
+            layout,
+            exclusive,
+        );
+
         if let Some(value) = self.resources.get(&CbKey::ImageRef(image)) {
+            log::trace!("  (value.layout: {:?})", value.final_layout);
             if layout != ImageLayout::Undefined && value.final_layout != layout {
+                log::trace!(" \\-> About to fail w/ ::Denied (final layout: {:?}", value.final_layout);
                 return Err(AccessCheckError::Denied(
                     AccessError::UnexpectedImageLayout {
                         allowed: value.final_layout,
@@ -1233,10 +1305,14 @@ impl SyncCommandBuffer {
             }
 
             if !value.exclusive && exclusive {
+                log::trace!(" \\-> About to fail w/ ::Unknown");
                 return Err(AccessCheckError::Unknown);
             }
 
+            log::trace!(" \\-> Ok()");
             return Ok(Some((value.final_stages, value.final_access)));
+        } else {
+            log::trace!(" \\-> (None br)");
         }
 
         Err(AccessCheckError::Unknown)
